@@ -1,0 +1,8 @@
+{
+  "name": "clone-zoom",
+  "version": "1.0.0",
+  "description": "Clone Zoom using NodeJs, webRTC and Websockets.",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
