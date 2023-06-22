@@ -1,6 +1,8 @@
 import http from "http";
 import express from "express";
-import WebSocket from "ws";
+import { Server } from "socket.io";
+// import SocketIO from "socket.io";
+import { instrument } from "@socket.io/admin-ui";
 
 const app = express();
 
@@ -10,53 +12,65 @@ app.use("/public", express.static(__dirname + "/public"));
 app.get("/", (req, res) => res.render("home"));
 app.get("/*", (req, res) => res.redirect("/"));
 
-const handleListen = () => console.log("Listening on http://localhost:8000");
-const server = http.createServer(app);
-// 웹소켓 서버와 http 서버가 동시에 돌아간다.
-const wss = new WebSocket.Server({ server });
-
-function getUniqueID() {
-  return Math.floor((1 + Math.random()) * 0x10000)
-    .toString(16)
-    .substring(1);
-}
-
-// message 의 종류에 따라 type 을 다르게 쓴다. ex) chatMessage, goOttMessage 등
-function makeMessage(type, nick, payload) {
-  const msg = { type, nick, payload };
-  return JSON.stringify(msg);
-}
-
-function shareChatExceptMe(socket, msg) {
-  console.log(socket.id, socket.nickname);
-  const message = JSON.parse(msg);
-  console.log(message);
-  const newSockets = sockets.filter((aSocket) => aSocket.id !== socket.id);
-  switch (message.type) {
-    case "new_message":
-      newSockets.forEach((aSocket) => {
-        aSocket.send(
-          makeMessage("chat", `${socket.nickname}`, `${message.payload}`)
-        );
-      });
-      break;
-    case "nickName": {
-      socket["nickname"] = message.payload;
-      break;
-    }
-  }
-}
-
-const sockets = [];
-
-wss.on("connection", (socket) => {
-  sockets.push(socket);
-  socket["id"] = getUniqueID();
-  socket["nickname"] = "Anonimous";
-  socket.on("close", () => {
-    console.log("backend close");
-  });
-  socket.on("message", (msg) => shareChatExceptMe(socket, msg));
+const httpServer = http.createServer(app);
+// const wsServer = SocketIO(httpServer);
+const wsServer = new Server(httpServer, {
+  cors: {
+    origin: ["https://admin.socket.io"],
+    credentials: true,
+  },
+});
+instrument(wsServer, {
+  auth: false,
 });
 
-server.listen(8000, handleListen);
+function publicRooms() {
+  const {
+    sockets: {
+      adapter: { sids, rooms },
+    },
+  } = wsServer;
+
+  const publicRooms = [];
+  rooms.forEach((_, key) => {
+    if (sids.get(key) === undefined) {
+      publicRooms.push(key);
+    }
+  });
+  return publicRooms;
+}
+
+function countRoom(roomName) {
+  return wsServer.sockets.adapter.rooms.get(roomName)?.size;
+}
+
+wsServer.on("connection", (socket) => {
+  socket["nickname"] = "Anonimous";
+  socket.on("nickname", (nickname) => (socket["nickname"] = nickname));
+  socket.onAny((event, ...args) => {
+    console.log(wsServer.sockets.adapter);
+    console.log(`Socket Event: ${event}`);
+  });
+  socket.on("enter_room", (roomName, done) => {
+    socket.join(roomName);
+    done();
+    // 본인을 제외한 room 멤버에게 보냄
+    socket.to(roomName).emit("welcome", socket.nickname, countRoom(roomName));
+    wsServer.sockets.emit("room_changed", publicRooms());
+  });
+  socket.on("disconnecting", () => {
+    socket.rooms.forEach((room) =>
+      socket.to(room).emit("bye", socket.nickname, countRoom(room) - 1)
+    );
+  });
+  socket.on("disconnect", () => {
+    wsServer.sockets.emit("room_changed", publicRooms());
+  });
+  socket.on("new_message", (msg, room, done) => {
+    socket.to(room).emit("new_message", `${socket.nickname} : ${msg}`);
+    done();
+  });
+});
+
+const handleListen = () => console.log("Listening on http://localhost:8000");
+httpServer.listen(8000, handleListen);
